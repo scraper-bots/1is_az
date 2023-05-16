@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Cafes for Remote Working</title>
+  </head>
+  <body>
+    <h1>Cafes for Remote Working</h1>
+    <ul>
+      {% for cafe in cafes %}
+        <li>{{ cafe[1] }}</li>
+      {% endfor %}
+    </ul>
+  </body>
+</html>
