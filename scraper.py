@@ -12,7 +12,8 @@ load_dotenv()
 class JobSearcherScraper:
     def __init__(self):
         self.base_url = "https://1is.az"
-        self.login_url = f"{self.base_url}/login"
+        self.login_page_url = f"{self.base_url}/login"
+        self.login_post_url = f"{self.base_url}/loginu"
         self.login_email = os.getenv('login')
         self.login_password = os.getenv('password')
         self.session = None
@@ -30,103 +31,72 @@ class JobSearcherScraper:
         
     async def login(self):
         try:
-            # First get login page to get CSRF token and form action
-            async with self.session.get(self.login_url) as response:
+            # First get login page to get CSRF token
+            async with self.session.get(self.login_page_url) as response:
                 login_page = await response.text()
                 soup = BeautifulSoup(login_page, 'html.parser')
                 
-                print("Examining login page structure...")
-                
-                # Look for the login form
-                login_form = soup.find('form')
-                if login_form:
-                    form_action = login_form.get('action')
-                    form_method = login_form.get('method', 'POST').upper()
-                    print(f"Found form - Action: {form_action}, Method: {form_method}")
-                else:
-                    print("No form found on login page")
-                
-                # Look for CSRF token in meta tag
+                # Find CSRF token from hidden input
                 csrf_token = None
-                meta_token = soup.find('meta', {'name': 'csrf-token'})
-                if meta_token:
-                    csrf_token = meta_token.get('content')
-                    print(f"Found CSRF token in meta tag: {csrf_token[:20]}...")
+                csrf_input = soup.find('input', {'name': '_token'})
+                if csrf_input:
+                    csrf_token = csrf_input.get('value')
+                    print(f"Found CSRF token: {csrf_token[:20]}...")
                 
-                # Also check for hidden input token
                 if not csrf_token:
-                    csrf_input = soup.find('input', {'name': '_token'})
-                    if csrf_input:
-                        csrf_token = csrf_input.get('value')
-                        print(f"Found CSRF token in hidden input: {csrf_token[:20]}...")
+                    print("No CSRF token found!")
+                    return False
                 
-                # Try to find the correct login endpoint
-                login_endpoint = form_action if login_form and form_action else f"{self.base_url}/login"
-                if not login_endpoint.startswith('http'):
-                    login_endpoint = f"{self.base_url}{login_endpoint}"
-                
-                print(f"Using login endpoint: {login_endpoint}")
+            # Prepare login data
+            login_data = {
+                '_token': csrf_token,
+                'email': self.login_email,
+                'password': self.login_password,
+            }
             
-            # Try different potential endpoints
-            endpoints_to_try = [
-                login_endpoint,
-                f"{self.base_url}/auth/login",
-                f"{self.base_url}/user/login", 
-                f"{self.base_url}/account/login",
-                f"{self.base_url}/signin"
-            ]
+            # Prepare headers
+            headers = {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Referer': self.login_page_url,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1'
+            }
             
-            for endpoint in endpoints_to_try:
-                print(f"Trying endpoint: {endpoint}")
+            print(f"Attempting login with email: {self.login_email}")
+            print(f"Using endpoint: {self.login_post_url}")
+            
+            # Submit login form
+            async with self.session.post(self.login_post_url, data=login_data, headers=headers, allow_redirects=True) as response:
+                response_text = await response.text()
+                final_url = str(response.url)
                 
-                # Prepare headers
-                headers = {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Referer': self.login_url,
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                    'Accept-Encoding': 'gzip, deflate'
-                }
+                print(f"Login response status: {response.status}")
+                print(f"Final URL: {final_url}")
                 
-                if csrf_token:
-                    headers['X-CSRF-TOKEN'] = csrf_token
-                    
-                # Prepare login data
-                login_data = {
-                    'email': self.login_email,
-                    'password': self.login_password,
-                }
-                
-                if csrf_token:
-                    login_data['_token'] = csrf_token
-                    
-                # Submit login form
-                try:
-                    async with self.session.post(endpoint, data=login_data, headers=headers, allow_redirects=True) as response:
-                        response_text = await response.text()
-                        print(f"Response status: {response.status} for {endpoint}")
-                        
-                        # Check for successful login indicators
-                        if (response.status in [200, 302] and 
-                            ('dashboard' in str(response.url).lower() or 
-                             'profile' in str(response.url).lower() or
-                             'jobsearcher' in response_text.lower() or
-                             'logout' in response_text.lower() or
-                             'dashboard' in response_text.lower())):
-                            print(f"Login successful using endpoint: {endpoint}")
-                            return True
-                        elif response.status != 405:  # Don't continue if method not allowed
-                            print(f"Login attempt failed for {endpoint} - Status: {response.status}")
-                            if 'error' in response_text.lower() or 'invalid' in response_text.lower():
-                                print("Response indicates login error")
-                                print(f"Response preview: {response_text[:200]}")
-                                
-                except Exception as e:
-                    print(f"Error trying endpoint {endpoint}: {e}")
-                    continue
-                    
-            print("All login endpoints failed")
-            return False
+                # Check for successful login indicators
+                # If redirected away from login page or contains logout, likely successful
+                if (response.status in [200, 302] and 
+                    (final_url != self.login_page_url and 
+                     final_url != self.login_post_url and
+                     ('logout' in response_text.lower() or 
+                      'dashboard' in response_text.lower() or
+                      'profile' in response_text.lower() or
+                      'jobsearcher' in response_text.lower()))):
+                    print("Login successful!")
+                    return True
+                else:
+                    print("Login failed - checking response")
+                    # Check if we're still on login page with error
+                    if 'login' in final_url.lower():
+                        print("Still on login page - credentials may be invalid")
+                        if 'error' in response_text.lower() or 'invalid' in response_text.lower():
+                            print("Error message detected in response")
+                    print(f"Response preview: {response_text[:300]}")
+                    return False
                     
         except Exception as e:
             print(f"Login error: {e}")
@@ -161,10 +131,20 @@ class JobSearcherScraper:
                     'profile_image': ''
                 }
                 
-                # Name
-                name_element = soup.find('h3')
+                # Name - find the correct h3 in jobsearcher-text
+                name_element = soup.find('div', class_='jobsearcher-text')
                 if name_element:
-                    data['name'] = name_element.get_text(strip=True)
+                    h3 = name_element.find('h3')
+                    if h3:
+                        data['name'] = h3.get_text(strip=True)
+                else:
+                    # Fallback to any h3
+                    h3_elements = soup.find_all('h3')
+                    for h3 in h3_elements:
+                        text = h3.get_text(strip=True)
+                        if text and 'İş axtaranlar' not in text:
+                            data['name'] = text
+                            break
                 
                 # Profile image
                 avatar_img = soup.find('div', class_='jobsearcher-avatar')
